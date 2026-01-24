@@ -100,15 +100,9 @@ jobs:
             exit 1
           fi
 
-          echo "Before:"
-          cat "$FILE"
-
           # macOS sed differs; on ubuntu this is fine. Keep backup.
           sed -i.bak -E "s|(^[[:space:]]*tag:[[:space:]]*).*$|\1\"${IMAGE_TAG}\"|g" "$FILE"
           rm -f "${FILE}.bak"
-
-          echo "After:"
-          cat "$FILE"
 
       # 6) Commit & push only if file changed
       - name: Commit & push GitOps changes (if any)
