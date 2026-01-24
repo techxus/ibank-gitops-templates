@@ -1,0 +1,127 @@
+name: Build, Push Image, Update GitOps Values
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Service Name (e.g., user-service)"
+        required: true
+        type: string
+      docker_image:
+        description: "Docker Image Repo (e.g., techxus/user-service)"
+        required: true
+        type: string
+      gitops_repo:
+        description: "GitOps Repo (e.g., techxus/ibank-minikube-gitops)"
+        required: true
+        type: string
+      gitops_branch:
+        description: "GitOps Repo Branch (e.g., master)"
+        required: false
+        default: "master"
+        type: string
+      values_file:
+        description: "Path to values file in GitOps repo (e.g., env/local/user-service-values.yaml)"
+        required: true
+        type: string
+      environment:
+        description: "Env label for commit message (local/dev/stage/prod)"
+        required: true
+        type: string
+      java_version:
+        required: false
+        default: "17"
+        type: string
+      maven_args:
+        required: false
+        default: "-DskipTests"
+        type: string
+
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      GITOPS_REPO_PAT:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build_push_update_gitops:
+    runs-on: ubuntu-latest
+    steps:
+      # 1) Checkout the SERVICE repo (the caller repo)
+      - name: Checkout service repo
+        uses: actions/checkout@v4
+
+      # 2) Build JAR
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: temurin
+
+      - name: Build with Maven
+        run: mvn -B clean package ${{ inputs.maven_args }}
+
+      # 3) Docker build/push (tag = SHA)
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push Docker Image (tag = SHA)
+        run: |
+          IMAGE="${{ inputs.docker_image }}:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
+
+      # 4) Checkout the GitOps repo
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repo }}
+          token: ${{ secrets.GITOPS_REPO_PAT }}
+          ref: ${{ inputs.gitops_branch }}
+          path: ibank-minikube-gitops
+
+      # 5) Update only the tag field in the existing values file
+      - name: Update image tag in GitOps values file
+        working-directory: ibank-minikube-gitops
+        run: |
+          FILE="${{ inputs.values_file }}"
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: values file not found: $FILE"
+            echo "Make sure it exists in the GitOps repo."
+            exit 1
+          fi
+
+          echo "Before:"
+          cat "$FILE"
+
+          # macOS sed differs; on ubuntu this is fine. Keep backup.
+          sed -i.bak -E "s|(^[[:space:]]*tag:[[:space:]]*).*$|\1\"${IMAGE_TAG}\"|g" "$FILE"
+          rm -f "${FILE}.bak"
+
+          echo "After:"
+          cat "$FILE"
+
+      # 6) Commit & push only if file changed
+      - name: Commit & push GitOps changes (if any)
+        working-directory: ibank-minikube-gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ inputs.values_file }}"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "${{ inputs.service_name }}(${{ inputs.environment }}): deploy ${IMAGE_TAG}"
+          
