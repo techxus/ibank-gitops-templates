@@ -124,4 +124,5 @@ jobs:
           fi
 
           git commit -m "${{ inputs.service_name }}(${{ inputs.environment }}): deploy ${IMAGE_TAG}"
+          git push origin "${{ inputs.gitops_branch }}"
           
