@@ -51,20 +51,31 @@ permissions:
 jobs:
   build_push_update_gitops:
     runs-on: ubuntu-latest
+
     steps:
-      # 1) Checkout the SERVICE repo (the caller repo)
+      # 1) Checkout the SERVICE repo (caller repo)
       - name: Checkout service repo
         uses: actions/checkout@v4
 
-      # 2) Build JAR
-      - name: Set up JDK
+      # 2) Setup Java + Maven auth to GitHub Packages (so it can download ibank-common deps)
+      - name: Set up JDK (and Maven auth for GitHub Packages)
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ inputs.java_version }}
           distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: maven
+          # This creates ~/.m2/settings.xml with credentials for server id "github"
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      # IMPORTANT: reusable workflow needs permission to read packages
+      # The calling workflow must grant it (see note below)
 
       - name: Build with Maven
-        run: mvn -B clean package ${{ inputs.maven_args }}
+        run: mvn -B -U clean package ${{ inputs.maven_args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 3) Docker build/push (tag = SHA)
       - name: Log in to Docker Hub
@@ -80,43 +91,40 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
 
-      # 4) Checkout the GitOps repo
-      - name: Checkout GitOps repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.gitops_repo }}
-          token: ${{ secrets.GITOPS_REPO_PAT }}
-          ref: ${{ inputs.gitops_branch }}
-          path: ibank-minikube-gitops
-
-      # 5) Update only the tag field in the existing values file
-      - name: Update image tag in GitOps values file
-        working-directory: ibank-minikube-gitops
-        run: |
-          FILE="${{ inputs.values_file }}"
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: values file not found: $FILE"
-            echo "Make sure it exists in the GitOps repo."
-            exit 1
-          fi
-
-          # macOS sed differs; on ubuntu this is fine. Keep backup.
-          sed -i.bak -E "s|(^[[:space:]]*tag:[[:space:]]*).*$|\1\"${IMAGE_TAG}\"|g" "$FILE"
-          rm -f "${FILE}.bak"
-
-      # 6) Commit & push only if file changed
-      - name: Commit & push GitOps changes (if any)
-        working-directory: ibank-minikube-gitops
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add "${{ inputs.values_file }}"
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-
-          git commit -m "${{ inputs.service_name }}(${{ inputs.environment }}): deploy ${IMAGE_TAG}"
-          git push origin "${{ inputs.gitops_branch }}"
-          
+#      # 4) Checkout the GitOps repo
+#      - name: Checkout GitOps repo
+#        uses: actions/checkout@v4
+#        with:
+#          repository: ${{ inputs.gitops_repo }}
+#          token: ${{ secrets.GITOPS_REPO_PAT }}
+#          ref: ${{ inputs.gitops_branch }}
+#          path: ibank-minikube-gitops
+#
+#      # 5) Update only the tag field in the existing values file
+#      - name: Update image tag in GitOps values file
+#        working-directory: ibank-minikube-gitops
+#        run: |
+#          FILE="${{ inputs.values_file }}"
+#          if [ ! -f "$FILE" ]; then
+#            echo "ERROR: values file not found: $FILE"
+#            exit 1
+#          fi
+#
+#          sed -i.bak -E "s|(^[[:space:]]*tag:[[:space:]]*).*$|\1\"${IMAGE_TAG}\"|g" "$FILE"
+#          rm -f "${FILE}.bak"
+#
+#      # 6) Commit & push only if file changed
+#      - name: Commit & push GitOps changes (if any)
+#        working-directory: ibank-minikube-gitops
+#        run: |
+#          git config user.name "github-actions[bot]"
+#          git config user.email "github-actions[bot]@users.noreply.github.com"
+#
+#          git add "${{ inputs.values_file }}"
+#          if git diff --cached --quiet; then
+#            echo "No changes to commit."
+#            exit 0
+#          fi
+#
+#          git commit -m "${{ inputs.service_name }}(${{ inputs.environment }}): deploy ${IMAGE_TAG}"
+#          git push origin "${{ inputs.gitops_branch }}"
