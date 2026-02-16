@@ -41,7 +41,7 @@ on:
 
 permissions:
   contents: read
-  packages: read   # 🔥 REQUIRED so Maven can download ibank-parent
+  packages: read
 
 jobs:
   build_push_update_gitops:
@@ -51,19 +51,60 @@ jobs:
       - name: Checkout service repo
         uses: actions/checkout@v4
 
-      # Ensure Maven can resolve parent from GitHub Packages
-      - name: Set up JDK + GitHub Packages auth
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ inputs.java_version }}
           cache: maven
-          server-id: github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
+
+      # ✅ CRITICAL: parent POM resolution happens before project repos are applied.
+      # Put the GitHub Packages repo in Maven settings (active profile).
+      - name: Configure Maven for GitHub Packages (repo + auth)
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<EOF
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+            <servers>
+              <server>
+                <id>github</id>
+                <username>${GITHUB_ACTOR}</username>
+                <password>${GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+
+            <profiles>
+              <profile>
+                <id>github-packages</id>
+                <repositories>
+                  <repository>
+                    <id>github</id>
+                    <url>https://maven.pkg.github.com/techxus/ibank-common</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>true</enabled></snapshots>
+                  </repository>
+                  <repository>
+                    <id>central</id>
+                    <url>https://repo.maven.apache.org/maven2</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>false</enabled></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+
+            <activeProfiles>
+              <activeProfile>github-packages</activeProfile>
+            </activeProfiles>
+          </settings>
+          EOF
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build with Maven
-        run: mvn -B -U clean package ${{ inputs.maven_args }}
+        run: mvn -B -U -s ~/.m2/settings.xml clean package ${{ inputs.maven_args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
