@@ -1,31 +1,15 @@
-name: Build, Push Image, Update GitOps Values
+name: Build and Push Docker Image
 
 on:
   workflow_call:
     inputs:
       service_name:
-        description: "Service name (e.g., user-service)"
+        description: "Service name"
         required: true
         type: string
 
       docker_image:
-        description: "Docker image repo (e.g., techxus/user-service)"
-        required: true
-        type: string
-
-      gitops_repo:
-        description: "GitOps repo (e.g., techxus/ibank-minikube-gitops)"
-        required: true
-        type: string
-
-      gitops_branch:
-        description: "GitOps branch"
-        required: false
-        default: "master"
-        type: string
-
-      values_file:
-        description: "Values file path inside GitOps repo"
+        description: "Docker image repo"
         required: true
         type: string
 
@@ -51,24 +35,19 @@ on:
         required: true
       DOCKERHUB_TOKEN:
         required: true
-      GITOPS_REPO_PAT:
-        required: true
 
 permissions:
   contents: read
   packages: read
 
 jobs:
-  build_push_update_gitops:
+  build_and_push:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout service repo
       - name: Checkout service repo
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Java + Maven cache + GitHub Packages auth
-      # (No custom settings.xml needed anymore)
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -79,63 +58,31 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
-      # 3️⃣ Build with Maven
       - name: Build with Maven
         run: mvn -B -U clean package ${{ inputs.maven_args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4️⃣ Login to Docker Hub
+      - name: Verify bootable jar
+        run: |
+          unzip -p target/*.jar META-INF/MANIFEST.MF | grep -E 'Main-Class|Start-Class'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 5️⃣ Build & Push Docker image (tag = commit SHA)
-      - name: Build & Push Docker Image
-        run: |
-          IMAGE="${{ inputs.docker_image }}:${{ github.sha }}"
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
-          echo "IMAGE_TAG=${{ github.sha }}" >> "$GITHUB_ENV"
-
-#      # 6️⃣ Checkout GitOps repo
-#      - name: Checkout GitOps repo
-#        uses: actions/checkout@v4
-#        with:
-#          repository: ${{ inputs.gitops_repo }}
-#          token: ${{ secrets.GITOPS_REPO_PAT }}
-#          ref: ${{ inputs.gitops_branch }}
-#          path: gitops
-#
-#      # 7️⃣ Update image tag in values file
-#      - name: Update GitOps values
-#        working-directory: gitops
-#        run: |
-#          FILE="${{ inputs.values_file }}"
-#
-#          if [ ! -f "$FILE" ]; then
-#            echo "ERROR: values file not found: $FILE"
-#            exit 1
-#          fi
-#
-#          sed -i.bak -E "s|(^[[:space:]]*tag:[[:space:]]*).*$|\1\"${IMAGE_TAG}\"|g" "$FILE"
-#          rm -f "${FILE}.bak"
-#
-#      # 8️⃣ Commit & push only if changed
-#      - name: Commit & push GitOps changes
-#        working-directory: gitops
-#        run: |
-#          git config user.name "github-actions[bot]"
-#          git config user.email "github-actions[bot]@users.noreply.github.com"
-#
-#          git add "${{ inputs.values_file }}"
-#
-#          if git diff --cached --quiet; then
-#            echo "No changes to commit."
-#            exit 0
-#          fi
-#
-#          git commit -m "${{ inputs.service_name }}(${{ inputs.environment }}): deploy ${IMAGE_TAG}"
-#          git push origin "${{ inputs.gitops_branch }}"
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ inputs.docker_image }}:${{ github.sha }}
+            ${{ inputs.docker_image }}:${{ inputs.environment }}
+          provenance: false
