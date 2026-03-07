@@ -30,10 +30,9 @@ on:
         default: "-DskipTests"
         type: string
 
-      ibank_version:
-        description: "Published ibank version from parent repo"
-        required: false
-        default: ""
+      image_version:
+        description: "Immutable Docker tag"
+        required: true
         type: string
 
     secrets:
@@ -64,18 +63,8 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
-      - name: Resolve Maven command
-        id: mvn_cmd
-        shell: bash
-        run: |
-          if [ -n "${{ inputs.ibank_version }}" ]; then
-            echo "cmd=mvn -B -U clean package -Drevision=${{ inputs.ibank_version }} ${{ inputs.maven_args }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "cmd=mvn -B -U clean package ${{ inputs.maven_args }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build with Maven
-        run: ${{ steps.mvn_cmd.outputs.cmd }}
+        run: mvn -B -U clean package ${{ inputs.maven_args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
